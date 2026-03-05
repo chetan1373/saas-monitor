@@ -4,10 +4,12 @@ import os
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
-DATABASE_URL = os.getenv(
+_raw_db_url = os.getenv(
     "DATABASE_URL",
     "postgresql://monitor:monitor_secret@localhost:5432/saas_monitor",
 )
+# Railway (and some other hosts) provide postgres:// — asyncpg requires postgresql://
+DATABASE_URL = _raw_db_url.replace("postgres://", "postgresql://", 1) if _raw_db_url.startswith("postgres://") else _raw_db_url
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 DEFAULT_POLL_INTERVAL_MINUTES = int(os.getenv("DEFAULT_POLL_INTERVAL_MINUTES", "5"))
 AI_GLOBAL_REPORT_INTERVAL_MINUTES = int(os.getenv("AI_GLOBAL_REPORT_INTERVAL_MINUTES", "15"))
