@@ -123,6 +123,12 @@ def _pool():
 
 # ── Dashboard data endpoints ──────────────────────────────────────────────────
 
+@app.get("/ping", include_in_schema=False)
+async def ping():
+    """Lightweight liveness probe — no DB required."""
+    return {"status": "ok"}
+
+
 @app.get("/", include_in_schema=False)
 async def root():
     return FileResponse("static/index.html")
