@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Service Status Dashboard</title>
+
+  <script>
+    if (localStorage.getItem('theme') === 'light') {
+      document.documentElement.classList.remove('dark');
+    } else {
+      document.documentElement.classList.add('dark');
+    }
+  </script>
+
+  <script>
+    tailwind = { config: {
+      darkMode: 'class',
+      theme: { extend: { colors: { brand: '#6366f1' } } }
+    }};
+  </script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+
+  <style>
+    [x-cloak] { display: none !important; }
+
+    .tile-operational  { background: linear-gradient(135deg, #16a34a, #15803d); border-color: #22c55e; }
+    .tile-degraded     { background: linear-gradient(135deg, #ca8a04, #a16207); border-color: #eab308; }
+    .tile-outage       { background: linear-gradient(135deg, #dc2626, #b91c1c); border-color: #ef4444; }
+    .tile-maintenance  { background: linear-gradient(135deg, #2563eb, #1d4ed8); border-color: #3b82f6; }
+    .tile-investigating{ background: linear-gradient(135deg, #9333ea, #7e22ce); border-color: #a855f7; }
+    .tile-monitoring   { background: linear-gradient(135deg, #ea580c, #c2410c); border-color: #f97316; }
+    .tile-unknown      { background: linear-gradient(135deg, #4b5563, #374151); border-color: #6b7280; }
+
+    /* Light mode tile variants */
+    html:not(.dark) .tile-operational  { background: linear-gradient(135deg, #bbf7d0, #86efac); border-color: #22c55e; }
+    html:not(.dark) .tile-degraded     { background: linear-gradient(135deg, #fef08a, #fde047); border-color: #eab308; }
+    html:not(.dark) .tile-outage       { background: linear-gradient(135deg, #fecaca, #fca5a5); border-color: #ef4444; }
+    html:not(.dark) .tile-maintenance  { background: linear-gradient(135deg, #bfdbfe, #93c5fd); border-color: #3b82f6; }
+    html:not(.dark) .tile-investigating{ background: linear-gradient(135deg, #e9d5ff, #d8b4fe); border-color: #a855f7; }
+    html:not(.dark) .tile-monitoring   { background: linear-gradient(135deg, #fed7aa, #fdba74); border-color: #f97316; }
+    html:not(.dark) .tile-unknown      { background: linear-gradient(135deg, #e5e7eb, #d1d5db); border-color: #9ca3af; }
+
+    .tile { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+    .tile:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
+
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+    @keyframes pulse-glow { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .pulse { animation: pulse-glow 2s infinite; }
+
+    html.dark ::-webkit-scrollbar { width: 6px; }
+    html.dark ::-webkit-scrollbar-track { background: #1f2937; }
+    html.dark ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+    html:not(.dark) ::-webkit-scrollbar { width: 6px; }
+    html:not(.dark) ::-webkit-scrollbar-track { background: #f3f4f6; }
+    html:not(.dark) ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+  </style>
+</head>
+
+<body class="bg-gray-100 dark:bg-gray-950 text-gray-900 dark:text-gray-100 min-h-screen font-sans antialiased"
+      x-data="servicesDashboard()" x-init="init()">
+
+<!-- ── Top bar ────────────────────────────────────────────────────────────── -->
+<header class="sticky top-0 z-30 bg-white/95 dark:bg-gray-900/95 backdrop-blur border-b border-gray-200 dark:border-gray-800 px-6 py-3">
+  <div class="max-w-screen-2xl mx-auto flex items-center justify-between gap-4 flex-wrap">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-sm">SI</div>
+      <div>
+        <h1 class="text-base font-semibold text-gray-900 dark:text-white leading-tight">Service Status Dashboard</h1>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Live status tiles per service</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2 flex-wrap">
+      <!-- Summary chips -->
+      <div class="hidden sm:flex items-center gap-2">
+        <span class="text-xs px-2.5 py-1 rounded-full bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 font-medium"
+              x-text="counts.operational + ' Operational'"></span>
+        <span x-show="counts.degraded > 0"
+              class="text-xs px-2.5 py-1 rounded-full bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-300 font-medium"
+              x-text="counts.degraded + ' Degraded'"></span>
+        <span x-show="counts.outage > 0"
+              class="text-xs px-2.5 py-1 rounded-full bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 font-medium"
+              x-text="counts.outage + ' Outage'"></span>
+        <span x-show="counts.other > 0"
+              class="text-xs px-2.5 py-1 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 font-medium"
+              x-text="counts.other + ' Other'"></span>
+      </div>
+
+      <span class="text-xs text-gray-400 dark:text-gray-500" x-text="lastRefreshLabel"></span>
+
+      <!-- Theme toggle -->
+      <button @click="toggleTheme()"
+              class="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition">
+        <svg x-show="darkMode" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+        </svg>
+        <svg x-show="!darkMode" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+        </svg>
+      </button>
+
+      <!-- Auto-refresh toggle -->
+      <button @click="toggleAutoRefresh()"
+              :class="autoRefresh ? 'bg-indigo-700 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300'"
+              class="text-xs px-3 py-1.5 rounded-lg transition font-medium">
+        <span x-text="autoRefresh ? '⏸ Auto' : '▶ Auto'"></span>
+      </button>
+
+      <!-- Manual refresh -->
+      <button @click="fetchServices()" :disabled="loading"
+              class="flex items-center gap-1.5 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 text-xs px-3 py-1.5 rounded-lg transition disabled:opacity-50">
+        <svg :class="loading ? 'animate-spin' : ''" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Refresh
+      </button>
+
+      <!-- Back to main dashboard -->
+      <a href="/"
+         class="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1.5 rounded-lg transition font-medium">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+        </svg>
+        Main Dashboard
+      </a>
+    </div>
+  </div>
+</header>
+
+<!-- ── Filter bar ─────────────────────────────────────────────────────────── -->
+<div class="max-w-screen-2xl mx-auto px-4 sm:px-6 pt-5 pb-2 flex flex-wrap items-center gap-3">
+  <!-- Status filter pills -->
+  <div class="flex flex-wrap gap-2">
+    <button @click="filterStatus = ''"
+            :class="filterStatus === '' ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700'"
+            class="text-xs px-3 py-1.5 rounded-full font-medium transition">All</button>
+    <template x-for="s in statusOptions" :key="s.value">
+      <button @click="filterStatus = filterStatus === s.value ? '' : s.value"
+              :class="filterStatus === s.value ? s.activeClass : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700'"
+              class="text-xs px-3 py-1.5 rounded-full font-medium transition"
+              x-text="s.label + ' (' + (counts[s.value] || 0) + ')'"></button>
+    </template>
+  </div>
+
+  <!-- Category filter -->
+  <select x-model="filterCategory"
+          class="ml-auto bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 text-xs rounded-lg px-3 py-1.5">
+    <option value="">All Categories</option>
+    <template x-for="cat in allCategories" :key="cat">
+      <option :value="cat" x-text="cat"></option>
+    </template>
+  </select>
+
+  <!-- Search -->
+  <input x-model="searchQuery" type="text" placeholder="Search…"
+         class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 text-xs rounded-lg px-3 py-1.5 w-36 focus:outline-none focus:ring-1 focus:ring-indigo-500"/>
+</div>
+
+<!-- ── Service tiles grid ─────────────────────────────────────────────────── -->
+<main class="max-w-screen-2xl mx-auto px-4 sm:px-6 py-4">
+  <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-4">
+    <template x-for="svc in filteredServices" :key="svc.slug">
+      <div :class="['tile border-2 rounded-2xl p-4 cursor-pointer select-none flex flex-col gap-2',
+                    'tile-' + (svc.enabled ? (svc.current_status || 'unknown') : 'unknown'),
+                    !svc.enabled ? 'opacity-40' : '']"
+           @click="selectService(svc)">
+
+        <!-- Logo + status dot -->
+        <div class="flex items-center justify-between">
+          <div class="w-8 h-8 rounded-lg bg-white/30 flex items-center justify-center overflow-hidden flex-shrink-0">
+            <img :src="svc.logo_url || ''" :alt="svc.name" class="w-6 h-6 object-contain"
+                 @error="$el.style.display='none'; $el.nextElementSibling.style.display='block'"
+                 style="display:block"/>
+            <span class="text-xs font-bold text-white hidden"
+                  x-text="svc.name.substring(0,2).toUpperCase()"></span>
+          </div>
+          <span :class="['status-dot pulse',
+                         svc.current_status === 'operational' ? 'bg-white/90' :
+                         svc.current_status === 'degraded'    ? 'bg-white' :
+                         svc.current_status === 'outage'      ? 'bg-white' : 'bg-white/70']">
+          </span>
+        </div>
+
+        <!-- Name -->
+        <p class="text-sm font-bold text-white dark:text-white leading-tight truncate
+                  html:not(.dark):text-gray-800"
+           :class="isDark() ? 'text-white' : 'text-gray-800'"
+           x-text="svc.name"></p>
+
+        <!-- Category -->
+        <p class="text-xs text-white/70 dark:text-white/70 truncate"
+           :class="isDark() ? 'text-white/70' : 'text-gray-600'"
+           x-text="svc.category"></p>
+
+        <!-- Status label -->
+        <div class="mt-auto">
+          <span class="inline-block text-xs font-semibold px-2 py-0.5 rounded-full bg-white/20 backdrop-blur-sm"
+                :class="isDark() ? 'text-white' : 'text-gray-700'"
+                x-text="statusLabel(svc.current_status)"></span>
+        </div>
+
+        <!-- Health score bar -->
+        <div class="w-full bg-white/20 rounded-full h-1.5 overflow-hidden">
+          <div class="h-1.5 rounded-full bg-white/80 transition-all duration-700"
+               :style="'width:' + (svc.health_score || 0) + '%'"></div>
+        </div>
+
+        <!-- Score + issues -->
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold"
+                :class="isDark() ? 'text-white/90' : 'text-gray-700'"
+                x-text="svc.health_score + '%'"></span>
+          <span x-show="svc.active_incident_count > 0"
+                class="text-xs bg-white/25 text-white font-semibold px-1.5 py-0.5 rounded-full"
+                :class="!isDark() && 'text-gray-800'"
+                x-text="svc.active_incident_count + ' issue' + (svc.active_incident_count > 1 ? 's' : '')"></span>
+        </div>
+      </div>
+    </template>
+
+    <!-- Empty state -->
+    <div x-show="filteredServices.length === 0 && !loading"
+         class="col-span-full text-center py-16 text-gray-400">
+      <svg class="w-12 h-12 mx-auto mb-3 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+          d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+      </svg>
+      <p>No services match your filter</p>
+    </div>
+
+    <!-- Loading skeleton -->
+    <template x-if="loading && filteredServices.length === 0">
+      <template x-for="i in 12" :key="i">
+        <div class="rounded-2xl border-2 border-gray-200 dark:border-gray-700 bg-gray-200 dark:bg-gray-800 animate-pulse h-40"></div>
+      </template>
+    </template>
+  </div>
+</main>
+
+<!-- ── Service detail modal ───────────────────────────────────────────────── -->
+<div x-show="selected" x-cloak
+     class="fixed inset-0 z-50 flex items-center justify-center p-4"
+     @click.self="selected = null">
+  <div class="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
+  <div class="relative bg-white dark:bg-gray-900 rounded-2xl shadow-2xl max-w-lg w-full p-6 border border-gray-200 dark:border-gray-700">
+    <div class="flex items-center justify-between mb-4">
+      <div class="flex items-center gap-3">
+        <div :class="'w-3 h-3 rounded-full ' + dotClass(selected?.current_status)"></div>
+        <h2 class="text-lg font-bold text-gray-900 dark:text-white" x-text="selected?.name"></h2>
+        <span class="text-xs text-gray-500 dark:text-gray-400" x-text="selected?.category"></span>
+      </div>
+      <button @click="selected = null" class="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 text-xl leading-none">✕</button>
+    </div>
+
+    <!-- Stats row -->
+    <div class="grid grid-cols-3 gap-3 mb-4">
+      <div class="bg-gray-50 dark:bg-gray-800 rounded-xl p-3 text-center">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">Health</p>
+        <p class="text-2xl font-bold" :class="scoreColor(selected?.health_score)" x-text="selected?.health_score + '%'"></p>
+      </div>
+      <div class="bg-gray-50 dark:bg-gray-800 rounded-xl p-3 text-center">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">Status</p>
+        <p class="text-sm font-semibold capitalize" x-text="statusLabel(selected?.current_status)"></p>
+      </div>
+      <div class="bg-gray-50 dark:bg-gray-800 rounded-xl p-3 text-center">
+        <p class="text-xs text-gray-500 dark:text-gray-400 mb-1">Active Issues</p>
+        <p class="text-2xl font-bold" :class="selected?.active_incident_count > 0 ? 'text-red-500' : 'text-green-500'"
+           x-text="selected?.active_incident_count"></p>
+      </div>
+    </div>
+
+    <!-- Active incidents for this service -->
+    <div class="space-y-2 max-h-52 overflow-y-auto">
+      <template x-if="serviceIncidents.length === 0">
+        <p class="text-sm text-green-500 dark:text-green-400 text-center py-3">All systems operational</p>
+      </template>
+      <template x-for="inc in serviceIncidents" :key="inc.id">
+        <div class="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 border-l-4"
+             :class="inc.severity === 1 ? 'border-red-500' : inc.severity === 2 ? 'border-orange-500' : inc.severity === 3 ? 'border-yellow-500' : 'border-blue-500'">
+          <div class="flex items-center justify-between gap-2 mb-1">
+            <span class="text-sm font-medium text-gray-800 dark:text-gray-200" x-text="inc.title"></span>
+            <span class="text-xs text-gray-400" x-text="inc.severity_label"></span>
+          </div>
+          <p x-show="inc.ai_summary" class="text-xs text-indigo-600 dark:text-indigo-300 italic" x-text="inc.ai_summary"></p>
+          <p x-show="!inc.ai_summary && inc.description" class="text-xs text-gray-500 dark:text-gray-400" x-text="inc.description"></p>
+        </div>
+      </template>
+    </div>
+
+    <!-- Footer links -->
+    <div class="flex items-center justify-between mt-4 pt-3 border-t border-gray-100 dark:border-gray-800">
+      <a :href="selected?.website" target="_blank" rel="noopener"
+         x-show="selected?.website"
+         class="text-xs text-indigo-500 hover:underline">↗ Service website</a>
+      <a href="/" class="text-xs text-gray-400 hover:text-indigo-500">View full dashboard →</a>
+    </div>
+  </div>
+</div>
+
+<script>
+function servicesDashboard() {
+  return {
+    services: [],
+    incidents: [],
+    loading: false,
+    autoRefresh: true,
+    _refreshTimer: null,
+    lastRefreshLabel: 'Never',
+    _refreshStartTime: null,
+    _labelTimer: null,
+
+    filterStatus: '',
+    filterCategory: '',
+    searchQuery: '',
+    allCategories: [],
+    selected: null,
+
+    darkMode: document.documentElement.classList.contains('dark'),
+
+    statusOptions: [
+      { value: 'operational',   label: 'Operational',   activeClass: 'bg-green-600 text-white' },
+      { value: 'degraded',      label: 'Degraded',      activeClass: 'bg-yellow-500 text-white' },
+      { value: 'outage',        label: 'Outage',        activeClass: 'bg-red-600 text-white' },
+      { value: 'maintenance',   label: 'Maintenance',   activeClass: 'bg-blue-600 text-white' },
+      { value: 'investigating', label: 'Investigating', activeClass: 'bg-purple-600 text-white' },
+    ],
+
+    get filteredServices() {
+      return this.services.filter(s => {
+        const matchStatus   = !this.filterStatus   || s.current_status === this.filterStatus;
+        const matchCategory = !this.filterCategory || s.category === this.filterCategory;
+        const matchSearch   = !this.searchQuery    ||
+          s.name.toLowerCase().includes(this.searchQuery.toLowerCase()) ||
+          s.category.toLowerCase().includes(this.searchQuery.toLowerCase());
+        return matchStatus && matchCategory && matchSearch;
+      });
+    },
+
+    get counts() {
+      const c = { operational: 0, degraded: 0, outage: 0, maintenance: 0, investigating: 0, other: 0 };
+      for (const s of this.services.filter(s => s.enabled)) {
+        const st = s.current_status || 'unknown';
+        if (st in c) c[st]++;
+        else if (!['operational','degraded','outage','maintenance','investigating'].includes(st)) c.other++;
+      }
+      return c;
+    },
+
+    get serviceIncidents() {
+      if (!this.selected) return [];
+      return this.incidents.filter(i => i.service_slug === this.selected.slug);
+    },
+
+    async init() {
+      await this.fetchServices();
+      this.startAutoRefresh();
+    },
+
+    async fetchServices() {
+      this.loading = true;
+      try {
+        const [svcRes, incRes] = await Promise.all([
+          fetch('/api/services'),
+          fetch('/api/incidents?active=true'),
+        ]);
+        if (svcRes.ok) {
+          this.services = await svcRes.json();
+          this.allCategories = [...new Set(this.services.map(s => s.category))].sort();
+        }
+        if (incRes.ok) this.incidents = await incRes.json();
+        this._updateRefreshLabel();
+      } catch { /* silent */ }
+      finally { this.loading = false; }
+    },
+
+    startAutoRefresh() {
+      if (this._refreshTimer) clearInterval(this._refreshTimer);
+      if (!this.autoRefresh) return;
+      this._refreshTimer = setInterval(() => this.fetchServices(), 60_000);
+    },
+
+    toggleAutoRefresh() {
+      this.autoRefresh = !this.autoRefresh;
+      if (this.autoRefresh) this.startAutoRefresh();
+      else clearInterval(this._refreshTimer);
+    },
+
+    _updateRefreshLabel() {
+      this._refreshStartTime = Date.now();
+      const tick = () => {
+        const s = Math.floor((Date.now() - this._refreshStartTime) / 1000);
+        this.lastRefreshLabel = s < 60 ? `${s}s ago` : `${Math.floor(s/60)}m ago`;
+      };
+      if (this._labelTimer) clearInterval(this._labelTimer);
+      this._labelTimer = setInterval(tick, 5000);
+      tick();
+    },
+
+    selectService(svc) {
+      this.selected = this.selected?.slug === svc.slug ? null : svc;
+    },
+
+    statusLabel(status) {
+      const map = {
+        operational: 'Operational', degraded: 'Degraded', outage: 'Outage',
+        maintenance: 'Maintenance', investigating: 'Investigating',
+        monitoring: 'Monitoring', resolved: 'Resolved', unknown: 'Unknown',
+      };
+      return map[status] || (status || 'Unknown');
+    },
+
+    dotClass(status) {
+      const map = {
+        operational: 'bg-green-500', degraded: 'bg-yellow-500', outage: 'bg-red-500',
+        maintenance: 'bg-blue-500', investigating: 'bg-purple-500',
+        monitoring: 'bg-orange-500', unknown: 'bg-gray-400',
+      };
+      return map[status] || 'bg-gray-400';
+    },
+
+    scoreColor(score) {
+      if (score >= 95) return 'text-green-500';
+      if (score >= 70) return 'text-yellow-500';
+      if (score >= 30) return 'text-orange-500';
+      return 'text-red-500';
+    },
+
+    isDark() {
+      return document.documentElement.classList.contains('dark');
+    },
+
+    toggleTheme() {
+      this.darkMode = !this.darkMode;
+      document.documentElement.classList.toggle('dark', this.darkMode);
+      localStorage.setItem('theme', this.darkMode ? 'dark' : 'light');
+    },
+  };
+}
+</script>
+</body>
+</html>

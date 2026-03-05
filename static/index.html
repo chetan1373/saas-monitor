@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SaaS Incident Monitor</title>
+
+  <!-- Apply saved theme before render to prevent flash -->
+  <script>
+    if (localStorage.getItem('theme') === 'light') {
+      document.documentElement.classList.remove('dark');
+    } else {
+      document.documentElement.classList.add('dark');
+    }
+  </script>
+
+  <!-- Tailwind config must be set BEFORE the Play CDN script -->
+  <script>
+    tailwind = { config: {
+      darkMode: 'class',
+      theme: { extend: { colors: { brand: '#6366f1' } } }
+    }};
+  </script>
+  <!-- Tailwind CSS Play CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Alpine.js -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+
+  <style>
+    [x-cloak] { display: none !important; }
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .status-operational  { background: #22c55e; box-shadow: 0 0 6px #22c55e88; }
+    .status-degraded     { background: #eab308; box-shadow: 0 0 6px #eab30888; }
+    .status-outage       { background: #ef4444; box-shadow: 0 0 6px #ef444488; }
+    .status-maintenance  { background: #3b82f6; box-shadow: 0 0 6px #3b82f688; }
+    .status-investigating{ background: #a855f7; box-shadow: 0 0 6px #a855f788; }
+    .status-monitoring   { background: #f97316; box-shadow: 0 0 6px #f9731688; }
+    .status-unknown      { background: #6b7280; }
+    .severity-1 { border-left: 3px solid #ef4444; }
+    .severity-2 { border-left: 3px solid #f97316; }
+    .severity-3 { border-left: 3px solid #eab308; }
+    .severity-4 { border-left: 3px solid #3b82f6; }
+    .drawer-overlay { background: rgba(0,0,0,0.6); backdrop-filter: blur(2px); }
+    .drawer-panel { transition: transform 0.3s cubic-bezier(0.4,0,0.2,1); }
+    .card-hover:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.2); transition: transform 0.2s, box-shadow 0.2s; }
+    .tile-operational  { background: linear-gradient(135deg, #16a34a, #15803d); border-color: #22c55e; }
+    .tile-degraded     { background: linear-gradient(135deg, #ca8a04, #a16207); border-color: #eab308; }
+    .tile-outage       { background: linear-gradient(135deg, #dc2626, #b91c1c); border-color: #ef4444; }
+    .tile-maintenance  { background: linear-gradient(135deg, #2563eb, #1d4ed8); border-color: #3b82f6; }
+    .tile-investigating{ background: linear-gradient(135deg, #9333ea, #7e22ce); border-color: #a855f7; }
+    .tile-monitoring   { background: linear-gradient(135deg, #ea580c, #c2410c); border-color: #f97316; }
+    .tile-unknown      { background: linear-gradient(135deg, #4b5563, #374151); border-color: #6b7280; }
+    html:not(.dark) .tile-operational  { background: linear-gradient(135deg, #bbf7d0, #86efac); border-color: #22c55e; }
+    html:not(.dark) .tile-degraded     { background: linear-gradient(135deg, #fef08a, #fde047); border-color: #eab308; }
+    html:not(.dark) .tile-outage       { background: linear-gradient(135deg, #fecaca, #fca5a5); border-color: #ef4444; }
+    html:not(.dark) .tile-maintenance  { background: linear-gradient(135deg, #bfdbfe, #93c5fd); border-color: #3b82f6; }
+    html:not(.dark) .tile-investigating{ background: linear-gradient(135deg, #e9d5ff, #d8b4fe); border-color: #a855f7; }
+    html:not(.dark) .tile-monitoring   { background: linear-gradient(135deg, #fed7aa, #fdba74); border-color: #f97316; }
+    html:not(.dark) .tile-unknown      { background: linear-gradient(135deg, #e5e7eb, #d1d5db); border-color: #9ca3af; }
+    /* Scrollbar — dark mode */
+    html.dark ::-webkit-scrollbar { width: 6px; }
+    html.dark ::-webkit-scrollbar-track { background: #1f2937; }
+    html.dark ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 3px; }
+    /* Scrollbar — light mode */
+    html:not(.dark) ::-webkit-scrollbar { width: 6px; }
+    html:not(.dark) ::-webkit-scrollbar-track { background: #f3f4f6; }
+    html:not(.dark) ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+    .pulse-dot { animation: pulse-glow 2s infinite; }
+    @keyframes pulse-glow { 0%,100%{opacity:1} 50%{opacity:0.5} }
+  </style>
+</head>
+
+<body class="bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 min-h-screen font-sans antialiased"
+      x-data="dashboard()" x-init="init()" @keydown.escape="closeDrawer()">
+
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<!-- TOP BAR                                                               -->
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<header class="sticky top-0 z-30 bg-white/95 dark:bg-gray-900/95 backdrop-blur border-b border-gray-200 dark:border-gray-800 px-6 py-3">
+  <div class="max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
+    <!-- Logo -->
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-sm">SI</div>
+      <div>
+        <h1 class="text-base font-semibold text-gray-900 dark:text-white leading-tight">SaaS Incident Monitor</h1>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Central Health Dashboard</p>
+      </div>
+    </div>
+
+    <!-- Right actions -->
+    <div class="flex items-center gap-2">
+      <!-- Last refresh -->
+      <span class="hidden sm:block text-xs text-gray-400 dark:text-gray-500 mr-1" x-text="lastRefreshLabel"></span>
+
+      <!-- Theme toggle -->
+      <button @click="toggleTheme()"
+              :title="darkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'"
+              class="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 transition">
+        <!-- Sun (shown in dark mode → click to go light) -->
+        <svg x-show="darkMode" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+        </svg>
+        <!-- Moon (shown in light mode → click to go dark) -->
+        <svg x-show="!darkMode" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+        </svg>
+      </button>
+
+      <!-- Auto-refresh toggle -->
+      <button @click="toggleAutoRefresh()"
+              :class="autoRefresh ? 'bg-indigo-700 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300'"
+              class="text-xs px-3 py-1.5 rounded-lg transition font-medium">
+        <span x-text="autoRefresh ? '⏸ Auto' : '▶ Auto'"></span>
+      </button>
+
+      <!-- Manual refresh -->
+      <button @click="manualRefresh()" :disabled="refreshing"
+              class="flex items-center gap-1.5 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 text-xs px-3 py-1.5 rounded-lg transition disabled:opacity-50">
+        <svg :class="refreshing ? 'animate-spin' : ''" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        Refresh
+      </button>
+
+      <!-- Service status tiles page -->
+      <a href="/services"
+         class="flex items-center gap-1.5 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 text-xs px-3 py-1.5 rounded-lg transition font-medium">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zm10 0a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zm10 0a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"/>
+        </svg>
+        Status Tiles
+      </a>
+
+      <!-- Manage services -->
+      <button @click="openDrawer()"
+              class="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3 py-1.5 rounded-lg transition font-medium">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        Manage Services
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<!-- MAIN CONTENT                                                          -->
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<main class="max-w-screen-2xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+
+  <!-- ── Stats row ─────────────────────────────────────────────────────── -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+    <!-- Overall health -->
+    <div class="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4 flex items-center gap-4">
+      <div class="relative w-14 h-14 flex-shrink-0">
+        <svg class="w-14 h-14 -rotate-90" viewBox="0 0 100 100">
+          <circle cx="50" cy="50" r="45" fill="none" stroke-width="8"
+            :stroke="darkMode ? '#374151' : '#e5e7eb'"/>
+          <circle cx="50" cy="50" r="45" fill="none" :stroke="healthColor" stroke-width="8"
+            stroke-linecap="round"
+            :stroke-dasharray="283"
+            :stroke-dashoffset="283 - (health.overall_score / 100) * 283"
+            style="transition: stroke-dashoffset 1s ease"/>
+        </svg>
+        <span class="absolute inset-0 flex items-center justify-center text-sm font-bold"
+              :class="healthColorText" x-text="health.overall_score + '%'"></span>
+      </div>
+      <div>
+        <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">Health</p>
+        <p class="text-lg font-bold" :class="healthColorText" x-text="healthLabel"></p>
+      </div>
+    </div>
+
+    <!-- Active incidents -->
+    <div class="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4">
+      <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Active Incidents</p>
+      <p class="text-3xl font-bold" :class="health.active_incident_count > 0 ? 'text-red-400' : 'text-green-400'"
+         x-text="health.active_incident_count"></p>
+      <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">across all services</p>
+    </div>
+
+    <!-- Services -->
+    <div class="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4">
+      <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Services</p>
+      <p class="text-3xl font-bold text-indigo-400" x-text="health.enabled_services"></p>
+      <p class="text-xs text-gray-400 dark:text-gray-500 mt-1" x-text="'of ' + health.total_services + ' monitored'"></p>
+    </div>
+
+    <!-- Affected categories -->
+    <div class="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-4">
+      <p class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Affected Categories</p>
+      <p class="text-3xl font-bold text-orange-400" x-text="affectedCategories"></p>
+      <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">with active incidents</p>
+    </div>
+  </div>
+
+  <!-- ── AI Insights ───────────────────────────────────────────────────── -->
+  <div class="bg-indigo-50 dark:bg-gray-900 rounded-xl border border-indigo-200 dark:border-indigo-900/50 p-5"
+       x-show="health.ai_analysis" x-cloak>
+    <div class="flex items-start gap-3">
+      <div class="w-8 h-8 rounded-lg bg-indigo-100 dark:bg-indigo-700/50 flex items-center justify-center flex-shrink-0 mt-0.5">
+        <svg class="w-4 h-4 text-indigo-500 dark:text-indigo-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+        </svg>
+      </div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2 mb-2">
+          <h2 class="text-sm font-semibold text-indigo-600 dark:text-indigo-300">AI Health Insights</h2>
+          <span class="pulse-dot status-dot status-operational" x-show="health.ai_analysis"></span>
+          <span class="text-xs text-gray-400 dark:text-gray-500"
+                x-text="health.ai_analysis_at ? 'Updated ' + timeAgo(health.ai_analysis_at) : ''"></span>
+        </div>
+        <p class="text-sm text-gray-700 dark:text-gray-300 leading-relaxed" x-text="health.ai_analysis"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Services grid ─────────────────────────────────────────────────── -->
+  <div>
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <h2 class="text-sm font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider">Services</h2>
+      <div class="flex items-center gap-2 flex-wrap">
+        <select x-model="filterStatus"
+                class="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 text-xs rounded-lg px-3 py-1.5 focus:ring-indigo-500 focus:border-indigo-500">
+          <option value="">All Status</option>
+          <option value="operational">Operational</option>
+          <option value="degraded">Degraded</option>
+          <option value="outage">Outage</option>
+          <option value="maintenance">Maintenance</option>
+          <option value="investigating">Investigating</option>
+        </select>
+        <select x-model="filterCategory"
+                class="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 text-xs rounded-lg px-3 py-1.5 focus:ring-indigo-500 focus:border-indigo-500">
+          <option value="">All Categories</option>
+          <template x-for="cat in allCategories" :key="cat">
+            <option :value="cat" x-text="cat"></option>
+          </template>
+        </select>
+        <input x-model="searchQuery" type="text" placeholder="Search services…"
+               class="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 text-xs rounded-lg px-3 py-1.5 w-40 focus:ring-indigo-500 focus:border-indigo-500 focus:outline-none"/>
+      </div>
+    </div>
+
+    <!-- Grid -->
+    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-3">
+      <template x-for="svc in filteredServices" :key="svc.slug">
+        <div @click="selectService(svc)"
+             :class="[
+               'rounded-xl border-2 p-3 cursor-pointer card-hover select-none flex flex-col gap-1.5',
+               'tile-' + (svc.enabled ? (svc.current_status || 'unknown') : 'unknown'),
+               !svc.enabled ? 'opacity-40' : '',
+               selectedService && selectedService.slug === svc.slug
+                 ? 'ring-2 ring-white ring-offset-1 ring-offset-transparent' : ''
+             ]">
+          <div class="flex items-start justify-between">
+            <div class="w-7 h-7 rounded-lg overflow-hidden bg-white/30 flex items-center justify-center flex-shrink-0">
+              <img :src="svc.logo_url || ''" :alt="svc.name" class="w-5 h-5 object-contain"
+                   @error="$el.style.display='none'; $el.nextElementSibling.style.display='flex'"
+                   style="display:block"/>
+              <span class="text-xs font-bold text-white hidden" style="display:none"
+                    x-text="svc.name.substring(0,2).toUpperCase()"></span>
+            </div>
+            <span :class="'status-dot status-' + (svc.current_status || 'unknown')"></span>
+          </div>
+          <p class="text-xs font-semibold truncate leading-tight"
+             :class="$el.closest('.dark') || document.documentElement.classList.contains('dark') ? 'text-white' : 'text-gray-800'"
+             x-text="svc.name"></p>
+          <p class="text-xs truncate opacity-70"
+             :class="document.documentElement.classList.contains('dark') ? 'text-white' : 'text-gray-600'"
+             x-text="svc.category"></p>
+          <!-- Health bar -->
+          <div class="w-full bg-white/20 rounded-full h-1 overflow-hidden mt-0.5">
+            <div class="h-1 rounded-full bg-white/80 transition-all duration-700"
+                 :style="'width:' + (svc.health_score || 0) + '%'"></div>
+          </div>
+          <div class="flex items-center justify-between mt-0.5">
+            <span class="text-xs font-bold"
+                  :class="document.documentElement.classList.contains('dark') ? 'text-white/90' : 'text-gray-700'"
+                  x-text="svc.health_score + '%'"></span>
+            <span x-show="svc.active_incident_count > 0"
+                  class="text-xs bg-white/25 font-semibold px-1.5 py-0.5 rounded-full"
+                  :class="document.documentElement.classList.contains('dark') ? 'text-white' : 'text-gray-800'"
+                  x-text="svc.active_incident_count + ' issue' + (svc.active_incident_count > 1 ? 's' : '')"></span>
+          </div>
+        </div>
+      </template>
+
+      <div x-show="filteredServices.length === 0" class="col-span-full text-center py-12 text-gray-400">
+        <svg class="w-10 h-10 mx-auto mb-2 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+        </svg>
+        <p class="text-sm">No services match your filter</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Selected service detail ───────────────────────────────────────── -->
+  <div x-show="selectedService" x-cloak
+       class="bg-white dark:bg-gray-900 rounded-xl border border-indigo-300 dark:border-indigo-800/50 p-5">
+    <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center gap-3">
+        <span :class="'status-dot status-' + selectedService?.current_status"></span>
+        <h3 class="font-semibold text-gray-900 dark:text-white" x-text="selectedService?.name"></h3>
+        <span class="text-xs text-gray-500 dark:text-gray-400" x-text="selectedService?.category"></span>
+        <a :href="selectedService?.website" target="_blank" rel="noopener"
+           x-show="selectedService?.website"
+           class="text-xs text-indigo-500 dark:text-indigo-400 hover:underline">↗ Website</a>
+      </div>
+      <button @click="selectedService = null"
+              class="text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 text-lg leading-none">✕</button>
+    </div>
+    <div class="space-y-2">
+      <template x-if="serviceIncidents.length === 0">
+        <p class="text-sm text-green-500 dark:text-green-400">✓ All systems operational — no active incidents.</p>
+      </template>
+      <template x-for="inc in serviceIncidents" :key="inc.id">
+        <div :class="'severity-' + inc.severity" class="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 pl-4">
+          <div class="flex items-center justify-between gap-2 flex-wrap">
+            <span class="font-medium text-sm text-gray-900 dark:text-white" x-text="inc.title"></span>
+            <div class="flex items-center gap-2">
+              <span :class="severityBadgeClass(inc.severity)" class="text-xs px-2 py-0.5 rounded-full font-medium"
+                    x-text="inc.severity_label"></span>
+              <span class="text-xs text-gray-500 dark:text-gray-400" x-text="timeAgo(inc.started_at)"></span>
+            </div>
+          </div>
+          <p x-show="inc.ai_summary" class="text-xs text-indigo-600 dark:text-indigo-300 mt-1.5 italic"
+             x-text="'🤖 ' + inc.ai_summary"></p>
+          <p x-show="inc.ai_impact" class="text-xs text-orange-500 dark:text-orange-300 mt-1"
+             x-text="'⚠ ' + inc.ai_impact"></p>
+          <p x-show="!inc.ai_summary && inc.description" class="text-xs text-gray-500 dark:text-gray-400 mt-1"
+             x-text="inc.description"></p>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- ── Active incidents feed (grouped by service) ───────────────────── -->
+  <div>
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-sm font-semibold text-gray-500 dark:text-gray-300 uppercase tracking-wider flex items-center gap-2">
+        Active Incidents
+        <span x-show="incidents.length > 0"
+              class="bg-red-100 dark:bg-red-900/60 text-red-600 dark:text-red-300 text-xs px-2 py-0.5 rounded-full"
+              x-text="incidents.length"></span>
+      </h2>
+      <!-- Expand / Collapse all (only when multiple groups) -->
+      <div x-show="groupedIncidents.length > 1" class="flex items-center gap-3" x-cloak>
+        <button @click="expandAllGroups()"
+                class="text-xs text-gray-500 dark:text-gray-400 hover:text-indigo-500 dark:hover:text-indigo-400 transition">
+          Expand all
+        </button>
+        <span class="text-gray-300 dark:text-gray-700">|</span>
+        <button @click="collapseAllGroups()"
+                class="text-xs text-gray-500 dark:text-gray-400 hover:text-indigo-500 dark:hover:text-indigo-400 transition">
+          Collapse all
+        </button>
+      </div>
+    </div>
+
+    <!-- All clear -->
+    <div x-show="incidents.length === 0 && !loading"
+         class="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 p-8 text-center">
+      <div class="w-12 h-12 mx-auto mb-3 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
+        <svg class="w-6 h-6 text-green-500 dark:text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+        </svg>
+      </div>
+      <p class="text-green-500 dark:text-green-400 font-medium">All Clear</p>
+      <p class="text-gray-500 text-sm mt-1">No active incidents across monitored services.</p>
+    </div>
+
+    <!-- Grouped by service -->
+    <div class="space-y-3">
+      <template x-for="group in groupedIncidents" :key="group.slug">
+        <div :class="'severity-' + group.worstSeverity"
+             class="bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+
+          <!-- Group header (click to expand/collapse) -->
+          <button @click="toggleGroup(group.slug)"
+                  class="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-800/60 transition-colors text-left">
+            <div class="flex items-center gap-2.5 min-w-0 flex-1 flex-wrap">
+              <img :src="group.logo_url" :alt="group.name"
+                   class="w-5 h-5 object-contain flex-shrink-0"
+                   @error="$el.style.display='none'" x-show="group.logo_url"/>
+              <span class="font-semibold text-gray-900 dark:text-white text-sm" x-text="group.name"></span>
+              <span class="text-xs text-gray-400 dark:text-gray-500" x-text="group.category"></span>
+              <span class="bg-red-100 dark:bg-red-900/50 text-red-600 dark:text-red-300 text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
+                    x-text="group.incidents.length + (group.incidents.length === 1 ? ' incident' : ' incidents')"></span>
+              <span :class="severityBadgeClass(group.worstSeverity)"
+                    class="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
+                    x-text="group.worstSeverityLabel"></span>
+            </div>
+            <!-- Chevron -->
+            <svg :class="collapsedGroups[group.slug] ? '-rotate-90' : 'rotate-0'"
+                 class="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0 transition-transform duration-200"
+                 fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+            </svg>
+          </button>
+
+          <!-- Incidents list (collapsible) -->
+          <div x-show="!collapsedGroups[group.slug]"
+               class="border-t border-gray-100 dark:border-gray-800 divide-y divide-gray-100 dark:divide-gray-800">
+            <template x-for="inc in group.incidents" :key="inc.id">
+              <div :class="'severity-' + inc.severity" class="p-4 pl-5">
+                <div class="flex flex-wrap items-start justify-between gap-2">
+                  <span class="font-medium text-gray-800 dark:text-gray-200 text-sm" x-text="inc.title"></span>
+                  <div class="flex items-center gap-2 flex-shrink-0">
+                    <span :class="severityBadgeClass(inc.severity)"
+                          class="text-xs px-2 py-0.5 rounded-full font-medium" x-text="inc.severity_label"></span>
+                    <span :class="'status-dot status-' + inc.normalized_status"></span>
+                    <span class="text-xs text-gray-500 dark:text-gray-400 capitalize"
+                          x-text="inc.normalized_status.replace('_',' ')"></span>
+                    <span class="text-xs text-gray-400 dark:text-gray-500" x-text="timeAgo(inc.started_at)"></span>
+                  </div>
+                </div>
+                <div x-show="inc.ai_summary"
+                     class="mt-2.5 bg-indigo-50 dark:bg-indigo-950/40 rounded-lg p-3 border border-indigo-200 dark:border-indigo-900/30">
+                  <p class="text-xs text-indigo-600 dark:text-indigo-300 leading-relaxed">
+                    <span class="font-medium">🤖 AI:</span>
+                    <span x-text="' ' + inc.ai_summary"></span>
+                  </p>
+                  <p x-show="inc.ai_impact" class="text-xs text-orange-500 dark:text-orange-300 mt-1.5 leading-relaxed">
+                    <span class="font-medium">⚠ Impact:</span>
+                    <span x-text="' ' + inc.ai_impact"></span>
+                  </p>
+                </div>
+                <p x-show="!inc.ai_summary && inc.description"
+                   class="text-xs text-gray-500 dark:text-gray-400 mt-2 leading-relaxed" x-text="inc.description"></p>
+                <div x-show="inc.components_affected && inc.components_affected.length > 0"
+                     class="flex flex-wrap gap-1.5 mt-2.5">
+                  <template x-for="comp in (inc.components_affected || [])" :key="comp">
+                    <span class="text-xs bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded-md"
+                          x-text="comp"></span>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </div>
+
+        </div>
+      </template>
+    </div>
+  </div>
+
+</main>
+
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<!-- SLIDE-IN DRAWER — Service Registry                                    -->
+<!-- ══════════════════════════════════════════════════════════════════════ -->
+<div x-show="drawerOpen" x-cloak class="fixed inset-0 z-50 flex justify-end" @click.self="closeDrawer()">
+  <div class="drawer-overlay absolute inset-0"></div>
+
+  <div class="drawer-panel relative bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-700 w-full max-w-md h-full overflow-y-auto shadow-2xl flex flex-col"
+       :style="drawerOpen ? 'transform:translateX(0)' : 'transform:translateX(100%)'">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-800 sticky top-0 bg-white dark:bg-gray-900 z-10">
+      <h2 class="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+        <svg class="w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"/>
+        </svg>
+        Service Registry
+        <span class="text-xs text-gray-400" x-text="'(' + allServices.length + ')'"></span>
+      </h2>
+      <button @click="closeDrawer()"
+              class="text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-white transition text-xl leading-none">✕</button>
+    </div>
+
+    <!-- Add button -->
+    <div class="px-5 py-3 border-b border-gray-200 dark:border-gray-800">
+      <button @click="startAdd()"
+              class="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm py-2 rounded-lg font-medium transition">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+        </svg>
+        Add New Service
+      </button>
+    </div>
+
+    <!-- Service list -->
+    <div class="flex-1 overflow-y-auto px-5 py-3 space-y-2">
+      <template x-for="svc in allServices" :key="svc.slug">
+        <div class="bg-gray-50 dark:bg-gray-800 rounded-lg px-3 py-2.5 flex items-center gap-3"
+             :class="!svc.enabled ? 'opacity-50' : ''">
+          <button @click="toggleService(svc)"
+                  :class="svc.enabled ? 'bg-green-600' : 'bg-gray-300 dark:bg-gray-600'"
+                  class="relative w-8 h-4 rounded-full transition flex-shrink-0 focus:outline-none"
+                  :title="svc.enabled ? 'Disable' : 'Enable'">
+            <span :class="svc.enabled ? 'translate-x-4' : 'translate-x-0'"
+                  class="absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full transition-transform shadow"></span>
+          </button>
+          <img :src="svc.logo_url || ''" class="w-5 h-5 object-contain flex-shrink-0"
+               @error="$el.style.display='none'" :alt="svc.name"/>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm font-medium text-gray-800 dark:text-gray-200 truncate" x-text="svc.name"></p>
+            <p class="text-xs text-gray-500 truncate" x-text="svc.category + ' · ' + svc.poll_interval_minutes + 'm'"></p>
+          </div>
+          <span :class="'status-dot status-' + (svc.current_status || 'unknown')" class="flex-shrink-0"></span>
+          <button @click="startEdit(svc)"
+                  class="text-gray-400 dark:text-gray-500 hover:text-indigo-500 dark:hover:text-indigo-400 transition p-1 flex-shrink-0" title="Edit">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+            </svg>
+          </button>
+          <button @click="deleteService(svc)"
+                  class="text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition p-1 flex-shrink-0" title="Delete">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+            </svg>
+          </button>
+        </div>
+      </template>
+    </div>
+
+    <!-- Add/Edit Form -->
+    <div x-show="showForm" x-cloak
+         class="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 sticky bottom-0 px-5 py-4 shadow-2xl">
+      <h3 class="text-sm font-semibold text-gray-900 dark:text-white mb-3"
+          x-text="editingSlug ? 'Edit Service' : 'Add New Service'"></h3>
+
+      <div x-show="formError"
+           class="mb-3 bg-red-50 dark:bg-red-900/40 border border-red-300 dark:border-red-800 rounded-lg px-3 py-2 text-xs text-red-600 dark:text-red-300"
+           x-text="formError"></div>
+
+      <div class="space-y-3">
+        <div>
+          <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">Service Name *</label>
+          <input x-model="form.name" type="text" placeholder="e.g. Stripe"
+                 class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-800 dark:text-gray-200 text-sm rounded-lg px-3 py-2 focus:ring-indigo-500 focus:border-indigo-500 focus:outline-none"/>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">Page Type</label>
+          <select x-model="form.page_type"
+                  class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-800 dark:text-gray-200 text-sm rounded-lg px-3 py-2 focus:ring-indigo-500 focus:border-indigo-500 focus:outline-none">
+            <option value="statuspage_v2">Statuspage v2 (JSON API)</option>
+            <option value="slack">Slack Status API</option>
+            <option value="html">HTML Status Page (AI-parsed)</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+            Status Page URL *
+            <span class="text-gray-400 dark:text-gray-600"
+                  x-text="form.page_type === 'html' ? '(paste the public HTML status URL)' : '(Statuspage v2 /summary.json)'"></span>
+          </label>
+          <input x-model="form.api_url" type="url"
+                 :placeholder="form.page_type === 'html' ? 'https://status.example.com' : 'https://status.example.com/api/v2/summary.json'"
+                 class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-800 dark:text-gray-200 text-sm rounded-lg px-3 py-2 focus:ring-indigo-500 focus:border-indigo-500 focus:outline-none"/>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">Category</label>
+            <select x-model="form.category"
+                    class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-800 dark:text-gray-200 text-sm rounded-lg px-3 py-2 focus:ring-indigo-500 focus:border-indigo-500 focus:outline-none">
+              <template x-for="cat in categories" :key="cat">
+                <option :value="cat" x-text="cat"></option>
+              </template>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">Poll Interval (min)</label>
+            <input x-model.number="form.poll_interval_minutes" type="number" min="1" max="1440"
+                   class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-800 dark:text-gray-200 text-sm rounded-lg px-3 py-2 focus:ring-indigo-500 focus:border-indigo-500 focus:outline-none"/>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">Website URL</label>
+          <input x-model="form.website" type="url" placeholder="https://example.com"
+                 class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-800 dark:text-gray-200 text-sm rounded-lg px-3 py-2 focus:ring-indigo-500 focus:border-indigo-500 focus:outline-none"/>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 dark:text-gray-400 mb-1">Logo URL</label>
+          <input x-model="form.logo_url" type="url" placeholder="https://example.com/favicon.ico"
+                 class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-800 dark:text-gray-200 text-sm rounded-lg px-3 py-2 focus:ring-indigo-500 focus:border-indigo-500 focus:outline-none"/>
+        </div>
+        <div class="flex items-center gap-2">
+          <button @click="form.enabled = !form.enabled"
+                  :class="form.enabled ? 'bg-green-600' : 'bg-gray-300 dark:bg-gray-600'"
+                  class="relative w-10 h-5 rounded-full transition focus:outline-none">
+            <span :class="form.enabled ? 'translate-x-5' : 'translate-x-0'"
+                  class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform shadow"></span>
+          </button>
+          <label class="text-xs text-gray-600 dark:text-gray-300"
+                 x-text="form.enabled ? 'Enabled (monitoring active)' : 'Disabled (paused)'"></label>
+        </div>
+      </div>
+
+      <div class="flex gap-2 mt-4">
+        <button @click="saveService()" :disabled="savingForm"
+                class="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm py-2 rounded-lg font-medium transition">
+          <span x-text="savingForm ? 'Saving…' : (editingSlug ? 'Update Service' : 'Add Service')"></span>
+        </button>
+        <button @click="cancelForm()"
+                class="px-4 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 text-sm py-2 rounded-lg transition">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div x-show="toast.show" x-cloak
+     x-transition:enter="transition ease-out duration-300"
+     x-transition:enter-start="opacity-0 translate-y-2"
+     x-transition:enter-end="opacity-100 translate-y-0"
+     x-transition:leave="transition ease-in duration-200"
+     x-transition:leave-start="opacity-100"
+     x-transition:leave-end="opacity-0"
+     :class="toast.type === 'error'
+       ? 'bg-red-50 dark:bg-red-900 border-red-300 dark:border-red-700 text-red-700 dark:text-red-200'
+       : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-800 dark:text-gray-200'"
+     class="fixed bottom-6 right-6 z-50 border rounded-xl px-4 py-3 text-sm shadow-xl max-w-sm"
+     x-text="toast.message">
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
