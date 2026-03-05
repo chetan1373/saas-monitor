@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -92,8 +96,19 @@ async def run_migrations(pool: asyncpg.Pool) -> None:
 
 # ── Pool init ─────────────────────────────────────────────────────────────────
 
-async def create_pool(dsn: str) -> asyncpg.Pool:
-    return await asyncpg.create_pool(dsn, min_size=2, max_size=10)
+async def create_pool(dsn: str, retries: int = 10, delay: float = 3.0) -> asyncpg.Pool:
+    """Create connection pool, retrying if the DB isn't ready yet (e.g. on Railway cold start)."""
+    for attempt in range(1, retries + 1):
+        try:
+            pool = await asyncpg.create_pool(dsn, min_size=2, max_size=10)
+            logger.info("Database connected (attempt %d)", attempt)
+            return pool
+        except Exception as exc:
+            if attempt == retries:
+                logger.error("Could not connect to database after %d attempts: %s", retries, exc)
+                raise
+            logger.warning("DB not ready (attempt %d/%d): %s — retrying in %.0fs", attempt, retries, exc, delay)
+            await asyncio.sleep(delay)
 
 
 async def init_schema(pool: asyncpg.Pool) -> None:
