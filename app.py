@@ -75,32 +75,42 @@ class ServiceUpdate(ServiceCreate):
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
+async def _init_db_and_scheduler(app: FastAPI) -> None:
+    """Connect to DB and start scheduler in the background so uvicorn can serve /ping immediately."""
+    logger.info("Connecting to database …")
+    try:
+        pool = await database.create_pool(DATABASE_URL)
+        await database.init_schema(pool)
+        await database.run_migrations(pool)
+        await database.seed_default_services(pool, DEFAULT_SERVICES)
+        app.state.pool = pool
+
+        logger.info("Starting background scheduler …")
+        scheduler = sched_module.create_scheduler(pool, DEFAULT_POLL_INTERVAL_MINUTES)
+        scheduler.start()
+        app.state.scheduler = scheduler
+
+        asyncio.create_task(sched_module.run_full_refresh(pool))
+        logger.info("SaaS Incident Monitor ready — http://%s:%s", APP_HOST, APP_PORT)
+    except Exception:
+        logger.exception("Startup failed — app will run in degraded mode (DB unavailable)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    logger.info("Connecting to database …")
-    pool = await database.create_pool(DATABASE_URL)
-    await database.init_schema(pool)
-    await database.run_migrations(pool)
-    await database.seed_default_services(pool, DEFAULT_SERVICES)
-    app.state.pool = pool
-
-    logger.info("Starting background scheduler …")
-    scheduler = sched_module.create_scheduler(pool, DEFAULT_POLL_INTERVAL_MINUTES)
-    scheduler.start()
-    app.state.scheduler = scheduler
-
-    # Kick off an immediate first-poll in the background (non-blocking)
-    asyncio.create_task(sched_module.run_full_refresh(pool))
-
-    logger.info("SaaS Incident Monitor started — http://%s:%s", APP_HOST, APP_PORT)
+    # Initialise pool/scheduler in the background so /ping is reachable immediately
+    app.state.pool = None
+    app.state.scheduler = None
+    asyncio.create_task(_init_db_and_scheduler(app))
 
     yield  # App is running
 
     # Shutdown
-    logger.info("Shutting down scheduler …")
-    scheduler.shutdown(wait=False)
-    await pool.close()
+    if app.state.scheduler:
+        logger.info("Shutting down scheduler …")
+        app.state.scheduler.shutdown(wait=False)
+    if app.state.pool:
+        await app.state.pool.close()
     logger.info("Goodbye.")
 
 
@@ -118,6 +128,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _pool():
+    if app.state.pool is None:
+        raise HTTPException(status_code=503, detail="Database initialising, please retry in a moment")
     return app.state.pool
 
 
